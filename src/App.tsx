@@ -203,10 +203,11 @@ export default function App() {
   const handleUpdateApplicationStatus = async (
     id: string,
     status: LoanApplication["status"],
-    notes: string
+    notes: string,
+    statusPemrosesan?: string
   ) => {
     if (!accessToken || !spreadsheetId) return;
-    await updateApplicationStatusAndNotes(accessToken, spreadsheetId, id, status, notes);
+    await updateApplicationStatusAndNotes(accessToken, spreadsheetId, id, status, notes, statusPemrosesan);
     // Reload apps to sync
     await loadApplications();
   };
@@ -571,10 +572,33 @@ export default function App() {
                           </td>
 
                           {/* Status Berkas Column */}
-                          <td className="px-6 py-4 whitespace-nowrap text-xs text-slate-300">
-                            <span className="bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2 py-1 rounded text-[11px] font-medium">
-                              {app.statusPemrosesan || "Lengkap & Siap Diperiksa"}
-                            </span>
+                          <td className="px-6 py-4 whitespace-nowrap text-xs text-slate-300" onClick={(e) => e.stopPropagation()}>
+                            <select
+                              value={app.statusPemrosesan || "Lengkap & Siap Diperiksa"}
+                              onChange={async (e) => {
+                                const newStatusPemrosesan = e.target.value;
+                                try {
+                                  await handleUpdateApplicationStatus(
+                                    app.id,
+                                    app.status,
+                                    app.adminNotes || "",
+                                    newStatusPemrosesan
+                                  );
+                                } catch (err) {
+                                  console.error("Gagal memperbarui status pemrosesan:", err);
+                                  alert("Gagal memperbarui status pemrosesan berkas.");
+                                }
+                              }}
+                              className="bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2.5 py-1 rounded-xl text-[11px] font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                            >
+                              <option value="Lengkap &amp; Siap Diperiksa" className="bg-[#131d35] text-white">Lengkap &amp; Siap Diperiksa</option>
+                              <option value="Menunggu Dokumen Tambahan" className="bg-[#131d35] text-white">Menunggu Dokumen Tambahan</option>
+                              <option value="Sedang Diverifikasi" className="bg-[#131d35] text-white">Sedang Diverifikasi</option>
+                              <option value="Tahap Analisis Risiko" className="bg-[#131d35] text-white">Tahap Analisis Risiko</option>
+                              <option value="Survei Lapangan" className="bg-[#131d35] text-white">Survei Lapangan</option>
+                              <option value="DiACC" className="bg-[#131d35] text-white">DiACC</option>
+                              <option value="Ditolak" className="bg-[#131d35] text-white">Ditolak</option>
+                            </select>
                           </td>
 
                           {/* Purpose */}

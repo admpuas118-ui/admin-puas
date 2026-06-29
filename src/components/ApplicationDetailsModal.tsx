@@ -21,7 +21,7 @@ import { LoanApplication } from "../types";
 interface ApplicationDetailsModalProps {
   application: LoanApplication | null;
   onClose: () => void;
-  onSave: (id: string, status: LoanApplication["status"], notes: string) => Promise<void>;
+  onSave: (id: string, status: LoanApplication["status"], notes: string, statusPemrosesan: string) => Promise<void>;
 }
 
 export default function ApplicationDetailsModal({
@@ -31,6 +31,7 @@ export default function ApplicationDetailsModal({
 }: ApplicationDetailsModalProps) {
   const [status, setStatus] = useState<LoanApplication["status"]>("Pending");
   const [notes, setNotes] = useState("");
+  const [statusPemrosesan, setStatusPemrosesan] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   
   // Custom Confirmation Modal state
@@ -40,6 +41,7 @@ export default function ApplicationDetailsModal({
     if (application) {
       setStatus(application.status);
       setNotes(application.adminNotes || "");
+      setStatusPemrosesan(application.statusPemrosesan || "Lengkap & Siap Diperiksa");
     }
   }, [application]);
 
@@ -55,8 +57,8 @@ export default function ApplicationDetailsModal({
   };
 
   // 1. Calculate Estimated Installments and Debt Service Ratio (DSR)
-  // Assume Flat interest rate of 12% per year (1% flat per month)
-  const monthlyInterestRate = 0.01; 
+  // Flat interest rate of 24% per year (2% flat per month)
+  const monthlyInterestRate = 0.02; 
   const monthlyPrincipal = application.amount / application.termMonths;
   const monthlyInterest = application.amount * monthlyInterestRate;
   const estimatedInstallment = monthlyPrincipal + monthlyInterest;
@@ -102,7 +104,7 @@ export default function ApplicationDetailsModal({
     setShowConfirm(false);
     setIsSaving(true);
     try {
-      await onSave(application.id, status, notes);
+      await onSave(application.id, status, notes, statusPemrosesan);
       onClose();
     } catch (error) {
       console.error(error);
@@ -276,7 +278,7 @@ export default function ApplicationDetailsModal({
                   <div>
                     <span className="text-slate-400">Estimasi Cicilan Bulanan:</span>
                     <p className="text-sm font-bold text-white mt-0.5">
-                      {formatIDR(estimatedInstallment)} <span className="text-[10px] font-normal text-slate-400">(Bunga 1% flat/bln)</span>
+                      {formatIDR(estimatedInstallment)} <span className="text-[10px] font-normal text-slate-400">(Bunga 2% flat/bln, atau 24%/tahun)</span>
                     </p>
                   </div>
                   <div>
@@ -296,31 +298,52 @@ export default function ApplicationDetailsModal({
               <div className="border-t border-white/10 pt-5 grid grid-cols-1 md:grid-cols-3 gap-6">
                 
                 {/* Change Status */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
-                    Keputusan Kredit
-                  </label>
-                  <div className="space-y-1.5">
-                    {[
-                      { id: "Pending", label: "Pending (Menunggu)", color: "border-yellow-500/30 bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20" },
-                      { id: "Sedang Ditinjau", label: "Sedang Ditinjau", color: "border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20" },
-                      { id: "Disetujui", label: "Setujui Permohonan", color: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20" },
-                      { id: "Ditolak", label: "Tolak Permohonan", color: "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" },
-                    ].map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => setStatus(opt.id as any)}
-                        className={`w-full text-left px-3.5 py-2 border rounded-xl text-xs font-semibold flex items-center justify-between transition cursor-pointer ${
-                          status === opt.id
-                            ? `${opt.color.split(" ")[1]} ${opt.color.split(" ")[0]} ${opt.color.split(" ")[2]} ring-1 ring-white/15`
-                            : "border-white/10 hover:bg-white/5 text-slate-300"
-                        }`}
-                      >
-                        <span>{opt.label}</span>
-                        {status === opt.id && <CheckCircle className="w-4 h-4 flex-shrink-0" />}
-                      </button>
-                    ))}
+                <div className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      Keputusan Kredit
+                    </label>
+                    <div className="space-y-1.5">
+                      {[
+                        { id: "Pending", label: "Pending (Menunggu)", color: "border-yellow-500/30 bg-yellow-500/10 text-yellow-300 hover:bg-yellow-500/20" },
+                        { id: "Sedang Ditinjau", label: "Sedang Ditinjau", color: "border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20" },
+                        { id: "Disetujui", label: "Setujui Permohonan", color: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20" },
+                        { id: "Ditolak", label: "Tolak Permohonan", color: "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" },
+                      ].map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setStatus(opt.id as any)}
+                          className={`w-full text-left px-3.5 py-2 border rounded-xl text-xs font-semibold flex items-center justify-between transition cursor-pointer ${
+                            status === opt.id
+                              ? `${opt.color.split(" ")[1]} ${opt.color.split(" ")[0]} ${opt.color.split(" ")[2]} ring-1 ring-white/15`
+                              : "border-white/10 hover:bg-white/5 text-slate-300"
+                          }`}
+                        >
+                          <span>{opt.label}</span>
+                          {status === opt.id && <CheckCircle className="w-4 h-4 flex-shrink-0" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      Status Pemrosesan Berkas
+                    </label>
+                    <select
+                      value={statusPemrosesan}
+                      onChange={(e) => setStatusPemrosesan(e.target.value)}
+                      className="w-full text-xs px-3.5 py-2.5 bg-black/25 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 text-white font-semibold cursor-pointer"
+                    >
+                      <option value="Lengkap &amp; Siap Diperiksa">Lengkap &amp; Siap Diperiksa</option>
+                      <option value="Menunggu Dokumen Tambahan">Menunggu Dokumen Tambahan</option>
+                      <option value="Sedang Diverifikasi">Sedang Diverifikasi</option>
+                      <option value="Tahap Analisis Risiko">Tahap Analisis Risiko</option>
+                      <option value="Survei Lapangan">Survei Lapangan</option>
+                      <option value="DiACC">DiACC</option>
+                      <option value="Ditolak">Ditolak</option>
+                    </select>
                   </div>
                 </div>
 

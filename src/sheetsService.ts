@@ -282,7 +282,8 @@ export async function updateApplicationStatusAndNotes(
   spreadsheetId: string,
   applicationId: string,
   newStatus: LoanApplication["status"],
-  adminNotes: string
+  adminNotes: string,
+  statusPemrosesan?: string
 ): Promise<void> {
   try {
     // 1. Fetch current applications to make sure we find the exact row
@@ -352,6 +353,27 @@ export async function updateApplicationStatusAndNotes(
 
     if (!notesRes.ok) {
       throw new Error("Gagal memperbarui catatan admin");
+    }
+
+    // 3. Update Status Pemrosesan Berkas (M)
+    if (statusPemrosesan) {
+      const pemrosesanRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!M${rowIndex}?valueInputOption=USER_ENTERED`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            values: [[statusPemrosesan]],
+          }),
+        }
+      );
+
+      if (!pemrosesanRes.ok) {
+        throw new Error("Gagal memperbarui status pemrosesan berkas");
+      }
     }
   } catch (error) {
     console.error("Error in updateApplicationStatusAndNotes:", error);

@@ -27,7 +27,7 @@ export default function NewApplicationForm({ onSave }: NewApplicationFormProps) 
   const parsedTerm = parseInt(termMonths) || 12;
 
   const monthlyPrincipal = parsedAmount / parsedTerm;
-  const monthlyInterest = parsedAmount * 0.01; // 1% flat per month estimate
+  const monthlyInterest = parsedAmount * 0.02; // 2% flat per month estimate (24% per year)
   const estimatedInstallment = parsedAmount > 0 ? (monthlyPrincipal + monthlyInterest) : 0;
   const dsr = parsedIncome > 0 ? (estimatedInstallment / parsedIncome) * 100 : 0;
 
@@ -340,6 +340,8 @@ export default function NewApplicationForm({ onSave }: NewApplicationFormProps) 
                 <option value="Sedang Diverifikasi">Sedang Diverifikasi</option>
                 <option value="Tahap Analisis Risiko">Tahap Analisis Risiko</option>
                 <option value="Survei Lapangan">Survei Lapangan</option>
+                <option value="DiACC">DiACC</option>
+                <option value="Ditolak">Ditolak</option>
               </select>
             </div>
           </div>
@@ -359,7 +361,7 @@ export default function NewApplicationForm({ onSave }: NewApplicationFormProps) 
               </div>
               <div>
                 <span className="text-slate-400">Estimasi Cicilan Bulanan:</span>
-                <p className="font-bold text-white">{formatIDR(estimatedInstallment)} <span className="text-[10px] font-normal text-slate-400">(1% flat/bln)</span></p>
+                <p className="font-bold text-white">{formatIDR(estimatedInstallment)} <span className="text-[10px] font-normal text-slate-400">(2% flat/bln, atau 24%/tahun)</span></p>
               </div>
               <div>
                 <span className="text-slate-400">Rasio Cicilan Pendapatan (DSR):</span>
