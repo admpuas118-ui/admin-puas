@@ -7,12 +7,13 @@ export interface LoanApplication {
   termMonths: number;
   purpose: string;
   monthlyIncome: number;
-  status: "Pending" | "Disetujui" | "Ditolak" | "Sedang Ditinjau";
+  status: "Pending" | "Disetujui" | "Ditolak" | "Sedang Ditinjau" | "BATAL";
   createdAt: string;
   adminNotes: string;
   kantor: string;
   statusPemrosesan: string;
   rowIndex?: number;
+  accAmount?: number;
 }
 
 export interface BankStats {
@@ -22,6 +23,7 @@ export interface BankStats {
   pendingCount: number;
   rejectedCount: number;
   reviewCount: number;
+  batalCount: number;
   averageIncome: number;
   averageLoanAmount: number;
 }

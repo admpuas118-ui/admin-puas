@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import {
   X,
   User,
-  Mail,
   Phone,
   Coins,
   Calendar,
@@ -17,11 +16,18 @@ import {
   Building,
 } from "lucide-react";
 import { LoanApplication } from "../types";
+import { calculatePUASKredit } from "../lib/loanCalculator";
 
 interface ApplicationDetailsModalProps {
   application: LoanApplication | null;
   onClose: () => void;
-  onSave: (id: string, status: LoanApplication["status"], notes: string, statusPemrosesan: string) => Promise<void>;
+  onSave: (
+    id: string,
+    status: LoanApplication["status"],
+    notes: string,
+    statusPemrosesan: string,
+    accAmount?: number
+  ) => Promise<void>;
 }
 
 export default function ApplicationDetailsModal({
@@ -32,6 +38,7 @@ export default function ApplicationDetailsModal({
   const [status, setStatus] = useState<LoanApplication["status"]>("Pending");
   const [notes, setNotes] = useState("");
   const [statusPemrosesan, setStatusPemrosesan] = useState("");
+  const [accAmount, setAccAmount] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
   
   // Custom Confirmation Modal state
@@ -42,6 +49,8 @@ export default function ApplicationDetailsModal({
       setStatus(application.status);
       setNotes(application.adminNotes || "");
       setStatusPemrosesan(application.statusPemrosesan || "Lengkap & Siap Diperiksa");
+      // Set default approved amount to requested amount if not already set, or load it
+      setAccAmount(application.accAmount ? application.accAmount.toString() : application.amount.toString());
     }
   }, [application]);
 
@@ -56,20 +65,17 @@ export default function ApplicationDetailsModal({
     }).format(value);
   };
 
-  // 1. Calculate Estimated Installments and Debt Service Ratio (DSR)
-  // Flat interest rate of 24% per year (2% flat per month)
-  const monthlyInterestRate = 0.02; 
-  const monthlyPrincipal = application.amount / application.termMonths;
-  const monthlyInterest = application.amount * monthlyInterestRate;
-  const estimatedInstallment = monthlyPrincipal + monthlyInterest;
+  // 1. Calculate PUAS brochure-aligned daily savings and monthly installments
+  const activeAmount = status === "Disetujui" ? (parseFloat(accAmount) || application.amount) : application.amount;
+  const { monthlyInstallment, dailySavings, isBrochureMatch } = calculatePUASKredit(activeAmount, application.termMonths);
   
   // DSR = Installment / Income
   const dsr = application.monthlyIncome > 0 
-    ? (estimatedInstallment / application.monthlyIncome) * 100 
+    ? (monthlyInstallment / application.monthlyIncome) * 100 
     : 0;
 
   // Risk Classification
-  let riskLevel: { label: string; bg: string; text: string; desc: string; border: string } = {
+  let riskLevel = {
     label: "Aman (Rendah)",
     bg: "bg-emerald-500/10",
     text: "text-emerald-400",
@@ -83,7 +89,7 @@ export default function ApplicationDetailsModal({
       bg: "bg-amber-500/10",
       text: "text-amber-400",
       border: "border-amber-500/25",
-      desc: "Cicilan berada di rentang 30% - 50% pendapatan bulanan nasabah. Memerlukan analisis jaminan.",
+      desc: "Cicilan berada di rentang 30% - 50% pendapatan bulanan nasabah. Memerlukan analisis jaminan tambahan.",
     };
   } else if (dsr > 50) {
     riskLevel = {
@@ -91,7 +97,7 @@ export default function ApplicationDetailsModal({
       bg: "bg-rose-500/10",
       text: "text-rose-400",
       border: "border-rose-500/25",
-      desc: "Cicilan melebihi 50% pendapatan bulanan nasabah. Potensi gagal bayar sangat tinggi.",
+      desc: "Cicilan melebihi 50% pendapatan bulanan nasabah. Potensi gagal bayar tinggi.",
     };
   }
 
@@ -104,7 +110,8 @@ export default function ApplicationDetailsModal({
     setShowConfirm(false);
     setIsSaving(true);
     try {
-      await onSave(application.id, status, notes, statusPemrosesan);
+      const finalAccAmount = status === "Disetujui" ? (parseFloat(accAmount) || application.amount) : 0;
+      await onSave(application.id, status, notes, statusPemrosesan, finalAccAmount);
       onClose();
     } catch (error) {
       console.error(error);
@@ -130,7 +137,7 @@ export default function ApplicationDetailsModal({
                 <span className="text-xs font-mono font-bold bg-indigo-500/20 text-indigo-300 px-2 py-0.5 rounded">
                   ID: {application.id}
                 </span>
-                <span className="text-sm text-slate-300">• Permohonan Kredit</span>
+                <span className="text-sm text-slate-300">• Tinjau Permohonan Kredit</span>
               </div>
               <button
                 type="button"
@@ -159,14 +166,6 @@ export default function ApplicationDetailsModal({
                       <div className="min-w-0">
                         <p className="text-xs text-slate-400">Nama Lengkap</p>
                         <p className="text-sm font-bold text-white truncate">{application.customerName}</p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center space-x-3 text-slate-300">
-                      <Mail className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                      <div className="min-w-0">
-                        <p className="text-xs text-slate-400">Email Kerja/Pribadi</p>
-                        <p className="text-sm font-semibold text-slate-200 truncate">{application.customerEmail}</p>
                       </div>
                     </div>
 
@@ -204,12 +203,24 @@ export default function ApplicationDetailsModal({
                     <div className="flex items-center space-x-3 text-slate-300">
                       <Coins className="w-4 h-4 text-slate-400 flex-shrink-0" />
                       <div>
-                        <p className="text-xs text-slate-400">Jumlah Pinjaman (Plafond)</p>
+                        <p className="text-xs text-slate-400">Plafond Pengajuan</p>
                         <p className="text-sm font-bold text-indigo-300 font-display">
                           {formatIDR(application.amount)}
                         </p>
                       </div>
                     </div>
+
+                    {application.accAmount && application.accAmount > 0 && (
+                      <div className="flex items-center space-x-3 text-slate-300">
+                        <CheckCircle className="w-4 h-4 text-emerald-400 flex-shrink-0" />
+                        <div>
+                          <p className="text-xs text-emerald-400 font-semibold">Jumlah Disetujui (ACC)</p>
+                          <p className="text-sm font-bold text-emerald-300 font-display">
+                            {formatIDR(application.accAmount)}
+                          </p>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="flex items-center space-x-3 text-slate-300">
                       <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
@@ -266,31 +277,37 @@ export default function ApplicationDetailsModal({
                   <div className="flex items-center space-x-2">
                     <ShieldAlert className="w-5 h-5 text-slate-300" />
                     <span className="text-xs font-bold text-slate-200 uppercase tracking-wide">
-                      Analisis Kelayakan &amp; Risiko Kredit (DSR)
+                      Analisis Kelayakan &amp; Simulasi Angsuran PUAS
                     </span>
                   </div>
-                  <span className={`text-[11px] font-extrabold px-2.5 py-0.5 rounded-full ${riskLevel.bg} ${riskLevel.text} border`}>
+                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${riskLevel.bg} ${riskLevel.text} border`}>
                     {riskLevel.label}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 text-xs pt-1">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs pt-1">
                   <div>
-                    <span className="text-slate-400">Estimasi Cicilan Bulanan:</span>
-                    <p className="text-sm font-bold text-white mt-0.5">
-                      {formatIDR(estimatedInstallment)} <span className="text-[10px] font-normal text-slate-400">(Bunga 2% flat/bln, atau 24%/tahun)</span>
+                    <span className="text-slate-400">Tabungan Harian:</span>
+                    <p className="text-sm font-extrabold text-amber-300 mt-0.5">
+                      {formatIDR(dailySavings)} <span className="text-[10px] text-slate-400 font-normal">/hari</span>
                     </p>
                   </div>
                   <div>
-                    <span className="text-slate-400">Rasio Cicilan (DTI/DSR):</span>
+                    <span className="text-slate-400">Angsuran Bulanan:</span>
+                    <p className="text-sm font-extrabold text-white mt-0.5">
+                      {formatIDR(monthlyInstallment)} <span className="text-[10px] text-slate-400 font-normal">/bulan</span>
+                    </p>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Rasio Cicilan (DSR):</span>
                     <p className={`text-sm font-bold mt-0.5 ${dsr > 50 ? "text-rose-400" : dsr > 30 ? "text-amber-400" : "text-emerald-400"}`}>
-                      {dsr.toFixed(1)}% <span className="text-[10px] text-slate-400 font-normal">dari total pendapatan</span>
+                      {dsr.toFixed(1)}% <span className="text-[10px] text-slate-400 font-normal">dari pendapatan</span>
                     </p>
                   </div>
                 </div>
                 
                 <p className="text-[11px] text-slate-200 leading-relaxed border-t border-white/10 pt-2.5">
-                  <strong className="text-white">Rekomendasi Sistem:</strong> {riskLevel.desc}
+                  <strong className="text-white">Keterangan:</strong> {riskLevel.desc} {isBrochureMatch ? "(Sesuai dengan brosur resmi PUAS KLATEN)" : "(Perhitungan estimasi suku bunga 24% efektif/tahun)"}
                 </p>
               </div>
 
@@ -309,6 +326,7 @@ export default function ApplicationDetailsModal({
                         { id: "Sedang Ditinjau", label: "Sedang Ditinjau", color: "border-purple-500/30 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20" },
                         { id: "Disetujui", label: "Setujui Permohonan", color: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20" },
                         { id: "Ditolak", label: "Tolak Permohonan", color: "border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20" },
+                        { id: "BATAL", label: "Batal (Nasabah Batal)", color: "border-slate-500/30 bg-slate-500/10 text-slate-300 hover:bg-slate-500/20" },
                       ].map((opt) => (
                         <button
                           key={opt.id}
@@ -343,22 +361,49 @@ export default function ApplicationDetailsModal({
                       <option value="Survei Lapangan">Survei Lapangan</option>
                       <option value="DiACC">DiACC</option>
                       <option value="Ditolak">Ditolak</option>
+                      <option value="BATAL">BATAL</option>
                     </select>
                   </div>
                 </div>
 
-                {/* Admin notes remarks */}
-                <div className="md:col-span-2 space-y-2">
-                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
-                    Catatan Penilaian Kredit (Admin Remarks)
-                  </label>
-                  <textarea
-                    rows={6}
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="Masukkan alasan persetujuan/penolakan, catatan jaminan nasabah, riwayat BI checking, atau persyaratan dokumen tambahan..."
-                    className="w-full text-xs px-3.5 py-2.5 bg-black/25 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 text-white leading-relaxed placeholder-slate-500"
-                  />
+                {/* Admin notes remarks & Approved Amount */}
+                <div className="md:col-span-2 space-y-4">
+                  {status === "Disetujui" && (
+                    <div className="space-y-2 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+                      <label className="block text-xs font-bold text-emerald-300 uppercase tracking-wider">
+                        ACC Berapa (Jumlah Disetujui)?
+                      </label>
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-emerald-400 font-bold text-xs">
+                          Rp
+                        </span>
+                        <input
+                          type="number"
+                          required
+                          value={accAmount}
+                          onChange={(e) => setAccAmount(e.target.value)}
+                          placeholder="Masukkan nilai ACC, misal: 10000000"
+                          className="w-full text-xs pl-9 pr-3 py-2.5 bg-black/45 border border-emerald-500/20 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-400 text-white font-bold"
+                        />
+                      </div>
+                      <p className="text-[10px] text-emerald-400">
+                        Default: {formatIDR(application.amount)} (plafond pengajuan). Suku bunga 2% flat per bulan akan dihitung otomatis berdasarkan jumlah ACC ini.
+                      </p>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                      Catatan Penilaian Kredit (Admin Remarks)
+                    </label>
+                    <textarea
+                      rows={status === "Disetujui" ? 4 : 8}
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder="Masukkan alasan persetujuan/penolakan, catatan jaminan nasabah, riwayat BI checking, atau persyaratan dokumen tambahan..."
+                      className="w-full text-xs px-3.5 py-2.5 bg-black/25 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 text-white leading-relaxed placeholder-slate-500"
+                    />
+                  </div>
                 </div>
               </div>
             </div>
@@ -413,6 +458,11 @@ export default function ApplicationDetailsModal({
                   <p className="text-[11px] text-slate-300">
                     - Status Baru: <strong className={`font-semibold ${status === "Disetujui" ? "text-emerald-400" : status === "Ditolak" ? "text-rose-400" : "text-yellow-400"}`}>{status}</strong>
                   </p>
+                  {status === "Disetujui" && (
+                    <p className="text-[11px] text-slate-300">
+                      - Plafond ACC: <strong className="text-emerald-400">{formatIDR(parseFloat(accAmount) || application.amount)}</strong>
+                    </p>
+                  )}
                   <p className="text-[11px] text-slate-300 truncate">
                     - Catatan Admin: <span className="italic">"{notes || "tanpa catatan"}"</span>
                   </p>

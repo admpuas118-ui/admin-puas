@@ -1,5 +1,5 @@
 import React from "react";
-import { FileText, Coins, CheckCircle, Clock, XCircle, SlidersHorizontal } from "lucide-react";
+import { FileText, Coins, CheckCircle, Clock, XCircle, SlidersHorizontal, Ban } from "lucide-react";
 import { BankStats } from "../types";
 
 interface LoanStatsCardsProps {
@@ -69,10 +69,18 @@ export default function LoanStatsCards({ stats }: LoanStatsCardsProps) {
       icon: <XCircle className="w-5 h-5 text-rose-400" />,
       bg: "bg-white/5 border-white/10",
     },
+    {
+      id: "stat-batal",
+      title: "Dibatalkan (BATAL)",
+      value: (stats.batalCount || 0).toString(),
+      sub: "Permohonan dibatalkan",
+      icon: <Ban className="w-5 h-5 text-slate-400" />,
+      bg: "bg-white/5 border-white/10",
+    },
   ];
 
   return (
-    <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-4">
       {cards.map((card) => (
         <div
           key={card.id}

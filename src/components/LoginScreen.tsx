@@ -17,7 +17,7 @@ export default function LoginScreen({ onLogin, isLoggingIn, error }: LoginScreen
             <ShieldCheck className="w-7 h-7" />
           </div>
           <span className="text-2xl font-extrabold font-display text-white tracking-tight">
-            MITRA<span className="text-indigo-400">BANGSA</span>
+            PUAS <span className="text-indigo-400">KLATEN</span>
           </span>
         </div>
         

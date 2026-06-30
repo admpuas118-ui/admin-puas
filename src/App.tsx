@@ -19,6 +19,7 @@ import LoanStatsCards from "./components/LoanStatsCards";
 import LoanCharts from "./components/LoanCharts";
 import NewApplicationForm from "./components/NewApplicationForm";
 import ApplicationDetailsModal from "./components/ApplicationDetailsModal";
+import AppsScriptGuideModal from "./components/AppsScriptGuideModal";
 
 import {
   ShieldCheck,
@@ -34,6 +35,9 @@ import {
   AlertCircle,
   HelpCircle,
   TrendingUp,
+  Code,
+  Copy,
+  Check,
 } from "lucide-react";
 
 export default function App() {
@@ -65,6 +69,7 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState<string>("Semua");
   const [kantorFilter, setKantorFilter] = useState<string>("Semua");
   const [selectedApplication, setSelectedApplication] = useState<LoanApplication | null>(null);
+  const [showAppsScriptGuide, setShowAppsScriptGuide] = useState(false);
 
   // Initialize Auth on Mount
   useEffect(() => {
@@ -204,10 +209,11 @@ export default function App() {
     id: string,
     status: LoanApplication["status"],
     notes: string,
-    statusPemrosesan?: string
+    statusPemrosesan?: string,
+    accAmount?: number
   ) => {
     if (!accessToken || !spreadsheetId) return;
-    await updateApplicationStatusAndNotes(accessToken, spreadsheetId, id, status, notes, statusPemrosesan);
+    await updateApplicationStatusAndNotes(accessToken, spreadsheetId, id, status, notes, statusPemrosesan, accAmount);
     // Reload apps to sync
     await loadApplications();
   };
@@ -220,6 +226,7 @@ export default function App() {
     let pendingCount = 0;
     let rejectedCount = 0;
     let reviewCount = 0;
+    let batalCount = 0;
     let sumIncome = 0;
 
     applications.forEach((app) => {
@@ -229,6 +236,7 @@ export default function App() {
       else if (app.status === "Pending") pendingCount++;
       else if (app.status === "Ditolak") rejectedCount++;
       else if (app.status === "Sedang Ditinjau") reviewCount++;
+      else if (app.status === "BATAL") batalCount++;
     });
 
     return {
@@ -238,6 +246,7 @@ export default function App() {
       pendingCount,
       rejectedCount,
       reviewCount,
+      batalCount,
       averageIncome: totalApplications ? sumIncome / totalApplications : 0,
       averageLoanAmount: totalApplications ? totalRequestedAmount / totalApplications : 0,
     };
@@ -249,7 +258,7 @@ export default function App() {
   const filteredApplications = applications.filter((app) => {
     const matchesSearch =
       app.customerName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      app.customerEmail.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (app.customerEmail || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
       app.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
       app.purpose.toLowerCase().includes(searchQuery.toLowerCase());
 
@@ -308,7 +317,7 @@ export default function App() {
               </div>
               <div className="leading-tight">
                 <span className="text-lg font-black font-display tracking-tight text-white">
-                  MITRA<span className="text-indigo-400">BANGSA</span>
+                  PUAS <span className="text-indigo-400">KLATEN</span>
                 </span>
                 <span className="text-[10px] block font-mono text-slate-400">Portal Admin Kredit</span>
               </div>
@@ -382,6 +391,16 @@ export default function App() {
               <ExternalLink className="w-3 h-3" />
             </a>
             
+            <span className="text-white/15">|</span>
+
+            <button
+              onClick={() => setShowAppsScriptGuide(true)}
+              className="inline-flex items-center space-x-1.5 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
+            >
+              <Code className="w-3.5 h-3.5" />
+              <span>Pasang Ekstensi Apps Script</span>
+            </button>
+
             <span className="text-white/15">|</span>
 
             <button
@@ -475,6 +494,7 @@ export default function App() {
                       <option value="Sedang Ditinjau">Sedang Ditinjau</option>
                       <option value="Disetujui">Disetujui</option>
                       <option value="Ditolak">Ditolak</option>
+                      <option value="BATAL">BATAL</option>
                     </select>
                   </div>
 
@@ -518,6 +538,7 @@ export default function App() {
                       <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Nama Nasabah</th>
                       <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Kantor</th>
                       <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Jumlah Kredit</th>
+                      <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Jumlah ACC</th>
                       <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Tenor</th>
                       <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Status Berkas</th>
                       <th className="px-6 py-3.5 text-left font-bold text-slate-300 uppercase tracking-wider text-[10px]">Tujuan Kredit</th>
@@ -530,7 +551,7 @@ export default function App() {
                   <tbody className="divide-y divide-white/5">
                     {filteredApplications.length === 0 ? (
                       <tr>
-                        <td colSpan={10} className="px-6 py-12 text-center text-slate-400 font-medium bg-black/5">
+                        <td colSpan={11} className="px-6 py-12 text-center text-slate-400 font-medium bg-black/5">
                           Tidak ada berkas permohonan kredit yang cocok dengan filter.
                         </td>
                       </tr>
@@ -548,10 +569,9 @@ export default function App() {
                             </span>
                           </td>
 
-                          {/* Customer Name & Email */}
+                          {/* Customer Name */}
                           <td className="px-6 py-4 whitespace-nowrap">
                             <div className="font-bold text-white">{app.customerName}</div>
-                            <div className="text-[10px] text-slate-300 mt-0.5">{app.customerEmail}</div>
                           </td>
 
                           {/* Kantor Column */}
@@ -564,6 +584,11 @@ export default function App() {
                           {/* Loan amount formatted */}
                           <td className="px-6 py-4 whitespace-nowrap font-semibold text-indigo-300">
                             {formatIDR(app.amount)}
+                          </td>
+
+                          {/* Approved amount formatted */}
+                          <td className="px-6 py-4 whitespace-nowrap font-bold text-emerald-400">
+                            {app.accAmount && app.accAmount > 0 ? formatIDR(app.accAmount) : "-"}
                           </td>
 
                           {/* Term */}
@@ -598,6 +623,7 @@ export default function App() {
                               <option value="Survei Lapangan" className="bg-[#131d35] text-white">Survei Lapangan</option>
                               <option value="DiACC" className="bg-[#131d35] text-white">DiACC</option>
                               <option value="Ditolak" className="bg-[#131d35] text-white">Ditolak</option>
+                              <option value="BATAL" className="bg-[#131d35] text-white">BATAL</option>
                             </select>
                           </td>
 
@@ -657,7 +683,10 @@ export default function App() {
         {/* ACTIVE TAB: NEW INPUT MANUAL FORM */}
         {activeTab === "input" && (
           <div className="max-w-4xl mx-auto">
-            <NewApplicationForm onSave={handleSaveNewApplication} />
+            <NewApplicationForm 
+              onSave={handleSaveNewApplication} 
+              onCancel={() => setActiveTab("dashboard")} 
+            />
           </div>
         )}
 
@@ -672,10 +701,15 @@ export default function App() {
         />
       )}
 
+      <AppsScriptGuideModal
+        isOpen={showAppsScriptGuide}
+        onClose={() => setShowAppsScriptGuide(false)}
+      />
+
       {/* 5. FOOTER DETAILS */}
       <footer className="bg-black/35 backdrop-blur-md border-t border-white/10 py-6 mt-12 text-xs text-slate-400 font-sans">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row justify-between items-center gap-4">
-          <p>© 2026 PT Bank Mitrabangsa (Persero) Tbk. Portal Pengelola Kredit Nasabah.</p>
+          <p>© 2026 PT Bank PUAS KLATEN. Portal Pengelola Kredit Nasabah.</p>
           <p className="flex items-center space-x-1 text-slate-300">
             <span>Sinkronisasi Google Drive API &amp; Google Sheets API Aktif</span>
           </p>

@@ -19,6 +19,7 @@ export const SHEET_COLUMNS = [
   "Catatan Admin",
   "Kantor",
   "Status Pemrosesan Berkas",
+  "Jumlah Disetujui (ACC)",
 ];
 
 /**
@@ -88,7 +89,7 @@ export async function createLoanSpreadsheet(accessToken: string, title: string):
 
     // 2. Add header columns & format them
     await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${DEFAULT_SHEET_NAME}!A1:M1?valueInputOption=RAW`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${DEFAULT_SHEET_NAME}!A1:N1?valueInputOption=RAW`,
       {
         method: "PUT",
         headers: {
@@ -125,9 +126,9 @@ export async function createLoanSpreadsheet(accessToken: string, title: string):
  */
 export async function fetchApplications(accessToken: string, spreadsheetId: string): Promise<LoanApplication[]> {
   try {
-    // We try to fetch from DEFAULT_SHEET_NAME, if fails we fall back to first sheet or values A:M
+    // We try to fetch from DEFAULT_SHEET_NAME, if fails we fall back to first sheet or values A:N
     const res = await fetch(
-      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(DEFAULT_SHEET_NAME)}!A:M`,
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(DEFAULT_SHEET_NAME)}!A:N`,
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -160,7 +161,7 @@ export async function fetchApplications(accessToken: string, spreadsheetId: stri
 
 async function fetchFromSheetTab(accessToken: string, spreadsheetId: string, sheetTabName: string): Promise<LoanApplication[]> {
   const res = await fetch(
-    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTabName)}!A:M`,
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetTabName)}!A:N`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
     }
@@ -194,6 +195,7 @@ function parseRowsToApplications(rows: any[][]): LoanApplication[] {
       adminNotes: row[10] || "",
       kantor: row[11] || "210",
       statusPemrosesan: row[12] || "Lengkap",
+      accAmount: parseFloat(row[13]) || 0,
       rowIndex: absoluteRowIndex,
     };
   });
@@ -218,10 +220,11 @@ export async function addApplication(accessToken: string, spreadsheetId: string,
       app.adminNotes,
       app.kantor,
       app.statusPemrosesan,
+      app.accAmount || 0,
     ];
 
     // Try DEFAULT_SHEET_NAME first
-    let targetRange = `${DEFAULT_SHEET_NAME}!A:M`;
+    let targetRange = `${DEFAULT_SHEET_NAME}!A:N`;
     
     const res = await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(targetRange)}:append?valueInputOption=USER_ENTERED`,
@@ -247,7 +250,7 @@ export async function addApplication(accessToken: string, spreadsheetId: string,
         const firstSheetName = meta.sheets?.[0]?.properties?.title;
         if (firstSheetName) {
           const fallbackRes = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(firstSheetName)}!A:M:append?valueInputOption=USER_ENTERED`,
+            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(firstSheetName)}!A:N:append?valueInputOption=USER_ENTERED`,
             {
               method: "POST",
               headers: {
@@ -283,7 +286,8 @@ export async function updateApplicationStatusAndNotes(
   applicationId: string,
   newStatus: LoanApplication["status"],
   adminNotes: string,
-  statusPemrosesan?: string
+  statusPemrosesan?: string,
+  accAmount?: number
 ): Promise<void> {
   try {
     // 1. Fetch current applications to make sure we find the exact row
@@ -315,7 +319,7 @@ export async function updateApplicationStatusAndNotes(
     // We can do two updates, or update the range I{row}:K{row}
     // Row slice I to K has length 3: Status (I), Tanggal Pengajuan (J), Catatan Admin (K)
     // To preserve "Tanggal Pengajuan" (J), we can perform a batch update values or update I and K separately.
-    // Let's do two separate standard PUT requests for simplicity and safety.
+    // Let's do separate standard PUT requests for simplicity and safety.
 
     // 1. Update Status (I)
     const statusRes = await fetch(
@@ -373,6 +377,27 @@ export async function updateApplicationStatusAndNotes(
 
       if (!pemrosesanRes.ok) {
         throw new Error("Gagal memperbarui status pemrosesan berkas");
+      }
+    }
+
+    // 4. Update Jumlah Disetujui (ACC) (N)
+    if (accAmount !== undefined) {
+      const accRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(sheetName)}!N${rowIndex}?valueInputOption=USER_ENTERED`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            values: [[accAmount]],
+          }),
+        }
+      );
+
+      if (!accRes.ok) {
+        throw new Error("Gagal memperbarui jumlah disetujui (ACC)");
       }
     }
   } catch (error) {
