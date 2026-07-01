@@ -16,6 +16,8 @@ import {
 import {
   extractSpreadsheetId,
   syncFirestoreToSheets,
+  addApplication,
+  updateApplicationStatusAndNotes,
 } from "./sheetsService";
 import { LoanApplication, BankStats } from "./types";
 import LoginScreen from "./components/LoginScreen";
@@ -65,7 +67,7 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<{
     status: "idle" | "success" | "error";
     message?: string;
-    details?: { added: number; updated: number; failed: number };
+    details?: { added: number; updated: number; failed: number; pulled: number };
   }>({ status: "idle" });
   
   // 3. Application Data States
@@ -206,6 +208,9 @@ export default function App() {
 
       const result = await syncFirestoreToSheets(token, sheetId, applications);
 
+      // Reload applications in the app to display pulled/updated entries from Sheets
+      await loadApplications();
+
       setSyncStatus({
         status: "success",
         message: "Sinkronisasi berhasil!",
@@ -231,6 +236,15 @@ export default function App() {
     try {
       await addApplicationFirestore(newApp);
       await loadApplications();
+
+      // Auto-sync new row to Google Sheets in background if available
+      const token = getCachedGoogleToken();
+      const sheetId = extractSpreadsheetId(spreadsheetLink);
+      if (token && sheetId) {
+        addApplication(token, sheetId, newApp)
+          .catch((err) => console.warn("Gagal menyinkronkan aplikasi baru ke Google Sheets:", err));
+      }
+
       setActiveTab("dashboard");
     } catch (err: any) {
       console.error(err);
@@ -261,6 +275,14 @@ export default function App() {
 
       await updateApplicationFirestore(id, updates);
       await loadApplications();
+
+      // Auto-sync status change to Google Sheets in background if available
+      const token = getCachedGoogleToken();
+      const sheetId = extractSpreadsheetId(spreadsheetLink);
+      if (token && sheetId) {
+        updateApplicationStatusAndNotes(token, sheetId, id, status, notes, statusPemrosesan, accAmount)
+          .catch((err) => console.warn("Gagal memperbarui data di Google Sheets secara otomatis:", err));
+      }
     } catch (err: any) {
       console.error(err);
       alert("Gagal memperbarui status pengajuan: " + err.message);
@@ -271,12 +293,32 @@ export default function App() {
     try {
       const app = applications.find(a => a.id === id);
       const updates: Partial<LoanApplication> = { accAmount };
+      let newStatus: LoanApplication["status"] = "Disetujui";
+      let newStatusPemrosesan = "DiACC";
       if (app && app.status !== "Disetujui") {
-        updates.status = "Disetujui";
-        updates.statusPemrosesan = "DiACC";
+        updates.status = newStatus;
+        updates.statusPemrosesan = newStatusPemrosesan;
+      } else if (app) {
+        newStatus = app.status;
+        newStatusPemrosesan = app.statusPemrosesan;
       }
       await updateApplicationFirestore(id, updates);
       await loadApplications();
+
+      // Auto-sync ACC change to Google Sheets in background if available
+      const token = getCachedGoogleToken();
+      const sheetId = extractSpreadsheetId(spreadsheetLink);
+      if (token && sheetId && app) {
+        updateApplicationStatusAndNotes(
+          token,
+          sheetId,
+          id,
+          newStatus,
+          app.adminNotes,
+          newStatusPemrosesan,
+          accAmount
+        ).catch((err) => console.warn("Gagal menyinkronkan ACC ke Google Sheets secara otomatis:", err));
+      }
     } catch (err: any) {
       console.error(err);
       alert("Gagal memperbarui jumlah ACC: " + err.message);
@@ -594,7 +636,7 @@ export default function App() {
                   <p className="font-bold text-white">{syncStatus.message}</p>
                   {syncStatus.details && (
                     <p className="text-slate-400 mt-0.5">
-                      Berhasil menambahkan <span className="text-emerald-400 font-bold">{syncStatus.details.added}</span> baris baru dan memperbarui <span className="text-indigo-400 font-bold">{syncStatus.details.updated}</span> baris data di Google Sheet.
+                      Berhasil menambahkan <span className="text-emerald-400 font-bold">{syncStatus.details.added}</span> baris baru, memperbarui <span className="text-indigo-400 font-bold">{syncStatus.details.updated}</span> baris di Google Sheet, dan mengimpor <span className="text-amber-400 font-bold">{syncStatus.details.pulled}</span> data baru ke aplikasi.
                       {syncStatus.details.failed > 0 && (
                         <span className="text-rose-400 font-semibold"> (Gagal: {syncStatus.details.failed})</span>
                       )}
