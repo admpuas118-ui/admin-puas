@@ -1,7 +1,6 @@
 // Google Sheets and Drive API Service
 
 import { LoanApplication } from "./types";
-import { addApplicationFirestore, updateApplicationFirestore } from "./firestoreService";
 
 const DEFAULT_SHEET_NAME = "Permohonan Pinjaman";
 
@@ -498,142 +497,18 @@ export function extractSpreadsheetId(url: string): string | null {
 /**
  * Sync all applications from Firestore to Google Sheets and vice-versa (Bidirectional Smart Sync).
  */
-export async function syncFirestoreToSheets(
+export async function deleteApplication(
   accessToken: string,
   spreadsheetId: string,
-  firestoreApps: LoanApplication[]
-): Promise<{ added: number; updated: number; failed: number; pulled: number }> {
-  let added = 0;
-  let updated = 0;
-  let failed = 0;
-  let pulled = 0;
-
-  try {
-    // 1. Ensure tab exists and headers are present
-    await ensureSheetTabExists(accessToken, spreadsheetId);
-
-    // 2. Fetch existing sheet applications
-    const sheetApps = await fetchApplications(accessToken, spreadsheetId);
-    
-    // Create maps for quick lookup
-    const sheetAppMap = new Map<string, LoanApplication>();
-    sheetApps.forEach((app) => {
-      if (app.id) {
-        sheetAppMap.set(app.id, app);
-      }
-    });
-
-    const firestoreAppMap = new Map<string, LoanApplication>();
-    firestoreApps.forEach((app) => {
-      if (app.id) {
-        firestoreAppMap.set(app.id, app);
-      }
-    });
-
-    // 3. Loop through firestore applications to push/sync to Sheets
-    for (const app of firestoreApps) {
-      try {
-        const matchedSheetApp = sheetAppMap.get(app.id);
-
-        if (matchedSheetApp) {
-          // Both have the application, check if there are differences
-          const isDifferent =
-            matchedSheetApp.status !== app.status ||
-            matchedSheetApp.adminNotes !== app.adminNotes ||
-            matchedSheetApp.statusPemrosesan !== app.statusPemrosesan ||
-            matchedSheetApp.accAmount !== app.accAmount ||
-            matchedSheetApp.customerName !== app.customerName ||
-            matchedSheetApp.phoneNumber !== app.phoneNumber ||
-            matchedSheetApp.amount !== app.amount ||
-            matchedSheetApp.termMonths !== app.termMonths ||
-            matchedSheetApp.purpose !== app.purpose ||
-            matchedSheetApp.monthlyIncome !== app.monthlyIncome;
-
-          if (isDifferent) {
-            // Determine who has more up-to-date processing fields
-            const sheetsHasUpdates =
-              (matchedSheetApp.status !== "Pending" && app.status === "Pending") ||
-              (matchedSheetApp.adminNotes && !app.adminNotes) ||
-              (matchedSheetApp.accAmount !== undefined && matchedSheetApp.accAmount > 0 && !app.accAmount) ||
-              (matchedSheetApp.statusPemrosesan !== "Lengkap" && app.statusPemrosesan === "Lengkap");
-
-            const firestoreHasUpdates =
-              (app.status !== "Pending" && matchedSheetApp.status === "Pending") ||
-              (app.adminNotes && !matchedSheetApp.adminNotes) ||
-              (app.accAmount !== undefined && app.accAmount > 0 && !matchedSheetApp.accAmount) ||
-              (app.statusPemrosesan !== "Lengkap" && matchedSheetApp.statusPemrosesan === "Lengkap");
-
-            if (sheetsHasUpdates && !firestoreHasUpdates) {
-              // Sheets is newer/processed, pull it to Firestore
-              await updateApplicationFirestore(app.id, {
-                status: matchedSheetApp.status,
-                adminNotes: matchedSheetApp.adminNotes,
-                statusPemrosesan: matchedSheetApp.statusPemrosesan,
-                accAmount: matchedSheetApp.accAmount,
-                customerName: matchedSheetApp.customerName,
-                phoneNumber: matchedSheetApp.phoneNumber,
-                amount: matchedSheetApp.amount,
-                termMonths: matchedSheetApp.termMonths,
-                purpose: matchedSheetApp.purpose,
-                monthlyIncome: matchedSheetApp.monthlyIncome,
-              });
-              pulled++;
-            } else {
-              // Otherwise, push current Firestore version to Sheets
-              await updateEntireSheetRow(accessToken, spreadsheetId, matchedSheetApp.rowIndex!, app);
-              updated++;
-            }
-          }
-        } else {
-          // Add as new row in Sheets
-          await addApplication(accessToken, spreadsheetId, app);
-          added++;
-        }
-      } catch (err) {
-        console.error(`Gagal menyinkronkan aplikasi ${app.id}:`, err);
-        failed++;
-      }
-    }
-
-    // 4. Loop through Sheets applications to pull new ones (exist in Sheet but not in Firestore)
-    for (const sheetApp of sheetApps) {
-      try {
-        if (sheetApp.id && !firestoreAppMap.has(sheetApp.id)) {
-          // If the application is marked as BATAL (Cancelled/Deleted), do NOT pull it back
-          if (sheetApp.status === "BATAL") {
-            continue;
-          }
-          // New application created in Sheets (e.g. from Sheets sidebar or typed directly)
-          // Pull into Firestore
-          await addApplicationFirestore({
-            id: sheetApp.id,
-            customerName: sheetApp.customerName,
-            customerEmail: sheetApp.customerEmail || "",
-            phoneNumber: sheetApp.phoneNumber,
-            amount: sheetApp.amount,
-            termMonths: sheetApp.termMonths,
-            purpose: sheetApp.purpose,
-            monthlyIncome: sheetApp.monthlyIncome,
-            status: sheetApp.status,
-            createdAt: sheetApp.createdAt || new Date().toISOString(),
-            adminNotes: sheetApp.adminNotes || "",
-            kantor: sheetApp.kantor || "210",
-            statusPemrosesan: sheetApp.statusPemrosesan || "Lengkap",
-            accAmount: sheetApp.accAmount || 0,
-          });
-          pulled++;
-        }
-      } catch (err) {
-        console.error(`Gagal mengimpor aplikasi ${sheetApp.id} dari Sheets:`, err);
-        failed++;
-      }
-    }
-
-    return { added, updated, failed, pulled };
-  } catch (error) {
-    console.error("Error in syncFirestoreToSheets:", error);
-    throw error;
-  }
+  applicationId: string
+): Promise<void> {
+  await updateApplicationStatusAndNotes(
+    accessToken,
+    spreadsheetId,
+    applicationId,
+    "BATAL",
+    "Dihapus oleh sistem/admin"
+  );
 }
 
 /**

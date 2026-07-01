@@ -1,32 +1,27 @@
 import React, { useState, useEffect } from "react";
 import {
   initAuth,
-  loginWithCredentials,
   logout,
   getCachedGoogleToken,
   setCachedGoogleToken,
   signInWithGoogleSheets,
 } from "./firebase";
 import {
-  fetchApplicationsFirestore,
-  addApplicationFirestore,
-  updateApplicationFirestore,
-  deleteApplicationFirestore,
-} from "./firestoreService";
-import {
   extractSpreadsheetId,
-  syncFirestoreToSheets,
+  fetchApplications,
   addApplication,
   updateApplicationStatusAndNotes,
+  deleteApplication,
+  listSpreadsheets,
+  createLoanSpreadsheet,
 } from "./sheetsService";
-import { LoanApplication, BankStats } from "./types";
+import { LoanApplication, BankStats, SpreadsheetFile } from "./types";
 import LoginScreen from "./components/LoginScreen";
 import LoanStatsCards from "./components/LoanStatsCards";
 import LoanCharts from "./components/LoanCharts";
 import NewApplicationForm from "./components/NewApplicationForm";
 import ApplicationDetailsModal from "./components/ApplicationDetailsModal";
-import AppsScriptGuideModal from "./components/AppsScriptGuideModal";
-import CreateSheetModal from "./components/CreateSheetModal";
+import SpreadsheetSelector from "./components/SpreadsheetSelector";
 
 import {
   ShieldCheck,
@@ -42,8 +37,6 @@ import {
   AlertCircle,
   HelpCircle,
   TrendingUp,
-  Code,
-  Copy,
   Check,
   X,
   Edit2,
@@ -75,16 +68,18 @@ export default function App() {
   const [isAppsLoading, setIsAppsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // 4. Navigation & Filtering States
+  // 4. Spreadsheets List State
+  const [availableSpreadsheets, setAvailableSpreadsheets] = useState<SpreadsheetFile[]>([]);
+  const [isLoadingSpreadsheets, setIsLoadingSpreadsheets] = useState(false);
+
+  // 5. Navigation & Filtering States
   const [activeTab, setActiveTab] = useState<"dashboard" | "input">("dashboard");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("Semua");
   const [kantorFilter, setKantorFilter] = useState<string>("Semua");
   const [selectedApplication, setSelectedApplication] = useState<LoanApplication | null>(null);
-  const [showAppsScriptGuide, setShowAppsScriptGuide] = useState(false);
-  const [showCreateSheetModal, setShowCreateSheetModal] = useState(false);
 
-  // 5. Inline Edit ACC States
+  // 6. Inline Edit ACC States
   const [editingAccId, setEditingAccId] = useState<string | null>(null);
   const [editingAccValue, setEditingAccValue] = useState<string>("");
 
@@ -102,57 +97,95 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Load applications once logged in
+  // Load applications once logged in and sheet is linked
   useEffect(() => {
-    if (user) {
+    if (user && spreadsheetLink) {
       loadApplications();
+    } else if (user && !spreadsheetLink) {
+      loadSpreadsheetsList();
     }
-  }, [user]);
+  }, [user, spreadsheetLink]);
+
+  const loadSpreadsheetsList = async () => {
+    setIsLoadingSpreadsheets(true);
+    try {
+      const token = getCachedGoogleToken();
+      if (token) {
+        const files = await listSpreadsheets(token);
+        setAvailableSpreadsheets(files);
+      }
+    } catch (error) {
+      console.error("Failed to load spreadsheets:", error);
+    } finally {
+      setIsLoadingSpreadsheets(false);
+    }
+  };
 
   const loadApplications = async () => {
     setIsAppsLoading(true);
     setErrorMsg(null);
     try {
-      const data = await fetchApplicationsFirestore();
+      const token = getCachedGoogleToken();
+      const sheetId = extractSpreadsheetId(spreadsheetLink);
+      
+      if (!token || !sheetId) {
+        setApplications([]);
+        return;
+      }
+      
+      const data = await fetchApplications(token, sheetId);
       
       // Filter out VERA AGUSTININGSIH (case-insensitive)
       const filtered = data.filter(
         (app) => app.customerName.trim().toUpperCase() !== "VERA AGUSTININGSIH"
       );
-      setApplications(filtered);
 
-      // Programmatically delete from DB in background if found
-      const veraApps = data.filter(
-        (app) => app.customerName.trim().toUpperCase() === "VERA AGUSTININGSIH"
-      );
-      if (veraApps.length > 0) {
-        for (const app of veraApps) {
-          try {
-            await deleteApplicationFirestore(app.id);
-          } catch (e) {
-            console.error("Gagal menghapus Vera di latar belakang:", e);
+      // Deduplicate applications by ID to prevent duplicate React keys
+      const uniqueAppsMap = new Map<string, LoanApplication>();
+      filtered.forEach((app) => {
+        if (app.id) {
+          // If already registered, we can keep the one that is more complete/latest
+          if (!uniqueAppsMap.has(app.id)) {
+            uniqueAppsMap.set(app.id, app);
           }
         }
-      }
+      });
+      const uniqueApps = Array.from(uniqueAppsMap.values());
+      
+      setApplications(uniqueApps);
     } catch (err: any) {
       console.error(err);
       setErrorMsg(
-        err.message || "Gagal mengambil data permohonan dari database Cloud."
+        err.message || "Gagal mengambil data permohonan dari Google Sheets."
       );
     } finally {
       setIsAppsLoading(false);
     }
   };
 
-  const handleLogin = async (username: string, password: string) => {
+  const handleSelectSpreadsheet = (id: string) => {
+    const link = `https://docs.google.com/spreadsheets/d/${id}/edit`;
+    setSpreadsheetLink(link);
+    setTempLink(link);
+    localStorage.setItem("bank_loan_spreadsheet_link", link);
+  };
+
+  const handleCreateNewSpreadsheet = async (title: string) => {
+    const token = getCachedGoogleToken();
+    if (!token) throw new Error("Akses ditolak. Silakan login kembali.");
+    const newSheet = await createLoanSpreadsheet(token, title);
+    handleSelectSpreadsheet(newSheet.id);
+  };
+
+  const handleGoogleLogin = async () => {
     setIsLoggingIn(true);
     setAuthError(null);
     try {
-      const loggedUser = await loginWithCredentials(username, password);
-      setUser(loggedUser);
+      const authRes = await signInWithGoogleSheets();
+      setUser(authRes.user);
       setNeedsAuth(false);
     } catch (err: any) {
-      setAuthError(err.message || "Nama akun atau kata sandi salah.");
+      setAuthError(err.message || "Gagal masuk menggunakan Google.");
     } finally {
       setIsLoggingIn(false);
     }
@@ -185,66 +218,22 @@ export default function App() {
       alert("Silakan tautkan Google Sheet Anda terlebih dahulu.");
       return;
     }
-
-    const sheetId = extractSpreadsheetId(spreadsheetLink);
-    if (!sheetId) {
-      alert("Format tautan Google Sheet tidak valid. Silakan periksa kembali tautan Anda.");
-      return;
-    }
-
-    setIsSyncing(true);
-    setSyncStatus({ status: "idle" });
-
-    try {
-      let token = getCachedGoogleToken();
-      if (!token) {
-        const authRes = await signInWithGoogleSheets();
-        token = authRes.accessToken;
-      }
-
-      if (!token) {
-        throw new Error("Gagal mengautentikasi dengan akun Google Anda.");
-      }
-
-      const result = await syncFirestoreToSheets(token, sheetId, applications);
-
-      // Reload applications in the app to display pulled/updated entries from Sheets
-      await loadApplications();
-
-      setSyncStatus({
-        status: "success",
-        message: "Sinkronisasi berhasil!",
-        details: result,
-      });
-
-      setTimeout(() => {
-        setSyncStatus((prev) => (prev.status === "success" ? { status: "idle" } : prev));
-      }, 6000);
-    } catch (err: any) {
-      console.error(err);
-      setSyncStatus({
-        status: "error",
-        message: err.message || "Gagal menyelaraskan data dengan Google Sheets.",
-      });
-    } finally {
-      setIsSyncing(false);
-    }
+    
+    // We only read from sheets now, so sync just means reload
+    await loadApplications();
   };
 
   const handleSaveNewApplication = async (newApp: Omit<LoanApplication, "rowIndex">) => {
     setIsAppsLoading(true);
     try {
-      await addApplicationFirestore(newApp);
-      await loadApplications();
-
-      // Auto-sync new row to Google Sheets in background if available
       const token = getCachedGoogleToken();
       const sheetId = extractSpreadsheetId(spreadsheetLink);
-      if (token && sheetId) {
-        addApplication(token, sheetId, newApp)
-          .catch((err) => console.warn("Gagal menyinkronkan aplikasi baru ke Google Sheets:", err));
+      if (!token || !sheetId) {
+        throw new Error("Tidak dapat menyimpan karena Spreadsheet belum tertaut.");
       }
-
+      
+      await addApplication(token, sheetId, newApp);
+      await loadApplications();
       setActiveTab("dashboard");
     } catch (err: any) {
       console.error(err);
@@ -262,27 +251,12 @@ export default function App() {
     accAmount?: number
   ) => {
     try {
-      const updates: Partial<LoanApplication> = {
-        status,
-        adminNotes: notes,
-      };
-      if (statusPemrosesan !== undefined) {
-        updates.statusPemrosesan = statusPemrosesan;
-      }
-      if (accAmount !== undefined) {
-        updates.accAmount = accAmount;
-      }
-
-      await updateApplicationFirestore(id, updates);
-      await loadApplications();
-
-      // Auto-sync status change to Google Sheets in background if available
       const token = getCachedGoogleToken();
       const sheetId = extractSpreadsheetId(spreadsheetLink);
-      if (token && sheetId) {
-        updateApplicationStatusAndNotes(token, sheetId, id, status, notes, statusPemrosesan, accAmount)
-          .catch((err) => console.warn("Gagal memperbarui data di Google Sheets secara otomatis:", err));
-      }
+      if (!token || !sheetId) throw new Error("Spreadsheet belum tertaut.");
+      
+      await updateApplicationStatusAndNotes(token, sheetId, id, status, notes, statusPemrosesan, accAmount);
+      await loadApplications();
     } catch (err: any) {
       console.error(err);
       alert("Gagal memperbarui status pengajuan: " + err.message);
@@ -292,33 +266,30 @@ export default function App() {
   const handleUpdateACC = async (id: string, accAmount: number) => {
     try {
       const app = applications.find(a => a.id === id);
-      const updates: Partial<LoanApplication> = { accAmount };
       let newStatus: LoanApplication["status"] = "Disetujui";
       let newStatusPemrosesan = "DiACC";
       if (app && app.status !== "Disetujui") {
-        updates.status = newStatus;
-        updates.statusPemrosesan = newStatusPemrosesan;
+        newStatus = "Disetujui";
+        newStatusPemrosesan = "DiACC";
       } else if (app) {
         newStatus = app.status;
         newStatusPemrosesan = app.statusPemrosesan;
       }
-      await updateApplicationFirestore(id, updates);
-      await loadApplications();
-
-      // Auto-sync ACC change to Google Sheets in background if available
+      
       const token = getCachedGoogleToken();
       const sheetId = extractSpreadsheetId(spreadsheetLink);
-      if (token && sheetId && app) {
-        updateApplicationStatusAndNotes(
-          token,
-          sheetId,
-          id,
-          newStatus,
-          app.adminNotes,
-          newStatusPemrosesan,
-          accAmount
-        ).catch((err) => console.warn("Gagal menyinkronkan ACC ke Google Sheets secara otomatis:", err));
-      }
+      if (!token || !sheetId || !app) throw new Error("Spreadsheet belum tertaut.");
+
+      await updateApplicationStatusAndNotes(
+        token,
+        sheetId,
+        id,
+        newStatus,
+        app.adminNotes,
+        newStatusPemrosesan,
+        accAmount
+      );
+      await loadApplications();
     } catch (err: any) {
       console.error(err);
       alert("Gagal memperbarui jumlah ACC: " + err.message);
@@ -332,7 +303,11 @@ export default function App() {
     if (window.confirm(`Apakah Anda yakin ingin menghapus permohonan atas nama ${app.customerName}? Tindakan ini tidak dapat dibatalkan.`)) {
       setIsAppsLoading(true);
       try {
-        await deleteApplicationFirestore(id);
+        const token = getCachedGoogleToken();
+        const sheetId = extractSpreadsheetId(spreadsheetLink);
+        if (!token || !sheetId) throw new Error("Spreadsheet belum tertaut.");
+        
+        await deleteApplication(token, sheetId, id);
         await loadApplications();
         // If the deleted application is currently open in modal, close it
         if (selectedApplication?.id === id) {
@@ -410,9 +385,24 @@ export default function App() {
   if (needsAuth) {
     return (
       <LoginScreen
-        onLogin={handleLogin}
+        onGoogleLogin={handleGoogleLogin}
         isLoggingIn={isLoggingIn}
         error={authError}
+      />
+    );
+  }
+
+  // Render SpreadsheetSelector if no sheet is linked
+  if (user && !spreadsheetLink) {
+    return (
+      <SpreadsheetSelector
+        spreadsheets={availableSpreadsheets}
+        onSelect={handleSelectSpreadsheet}
+        onCreateNew={handleCreateNewSpreadsheet}
+        isLoading={isLoadingSpreadsheets}
+        onRefresh={loadSpreadsheetsList}
+        onLogout={handleLogout}
+        userEmail={user.email || undefined}
       />
     );
   }
@@ -542,79 +532,45 @@ export default function App() {
               </div>
             ) : (
               <>
-                {spreadsheetLink ? (
-                  <>
-                    <button
-                      onClick={handleSyncSpreadsheet}
-                      disabled={isSyncing}
-                      className="inline-flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-[11px] px-3 py-1.5 rounded-xl transition cursor-pointer shadow-lg shadow-emerald-600/15"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
-                      <span>{isSyncing ? "Menyelaraskan..." : "Sinkronisasi Sekarang"}</span>
-                    </button>
+                <button
+                  onClick={handleSyncSpreadsheet}
+                  disabled={isSyncing}
+                  className="inline-flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-[11px] px-3 py-1.5 rounded-xl transition cursor-pointer shadow-lg shadow-emerald-600/15"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
+                  <span>{isSyncing ? "Menyelaraskan..." : "Sinkronisasi Sekarang"}</span>
+                </button>
 
-                    <span className="text-white/15">|</span>
+                <span className="text-white/15">|</span>
 
-                    <a
-                      href={spreadsheetLink}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center space-x-1 text-[11px] font-bold text-indigo-400 hover:text-indigo-300 hover:underline transition"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5" />
-                      <span>Buka Google Sheets</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                    
-                    <button
-                      onClick={() => {
-                        setTempLink(spreadsheetLink);
-                        setIsEditingLink(true);
-                      }}
-                      className="text-[10px] text-slate-400 hover:text-white underline transition cursor-pointer"
-                    >
-                      Ubah Tautan
-                    </button>
-
-                    <span className="text-white/15">|</span>
-
-                    <button
-                      onClick={handleDisconnectSpreadsheet}
-                      className="text-[10px] text-rose-400 hover:text-rose-300 transition cursor-pointer font-medium"
-                    >
-                      Putuskan Tautan
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      onClick={() => setIsEditingLink(true)}
-                      className="inline-flex items-center space-x-1 text-[11px] font-bold text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
-                    >
-                      <Plus className="w-3.5 h-3.5" />
-                      <span>Tautkan Google Sheet</span>
-                    </button>
-
-                    <span className="text-white/15">|</span>
-
-                    <button
-                      onClick={() => setShowCreateSheetModal(true)}
-                      className="inline-flex items-center space-x-1 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5" />
-                      <span>Buat Google Sheet Baru</span>
-                    </button>
-                  </>
-                )}
+                <a
+                  href={spreadsheetLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center space-x-1 text-[11px] font-bold text-indigo-400 hover:text-indigo-300 hover:underline transition"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Buka Google Sheets</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+                
+                <button
+                  onClick={() => {
+                    setTempLink(spreadsheetLink);
+                    setIsEditingLink(true);
+                  }}
+                  className="text-[10px] text-slate-400 hover:text-white underline transition cursor-pointer"
+                >
+                  Ubah Tautan
+                </button>
 
                 <span className="text-white/15">|</span>
 
                 <button
-                  onClick={() => setShowAppsScriptGuide(true)}
-                  className="inline-flex items-center space-x-1.5 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
+                  onClick={handleDisconnectSpreadsheet}
+                  className="text-[10px] text-rose-400 hover:text-rose-300 transition cursor-pointer font-medium"
                 >
-                  <Code className="w-3.5 h-3.5" />
-                  <span>Panduan Apps Script</span>
+                  Ganti Akun / Spreadsheet
                 </button>
               </>
             )}
@@ -1011,16 +967,6 @@ export default function App() {
           onDelete={handleDeleteApplication}
         />
       )}
-
-      <AppsScriptGuideModal
-        isOpen={showAppsScriptGuide}
-        onClose={() => setShowAppsScriptGuide(false)}
-      />
-
-      <CreateSheetModal
-        isOpen={showCreateSheetModal}
-        onClose={() => setShowCreateSheetModal(false)}
-      />
 
       {/* 5. FOOTER DETAILS */}
       <footer className="bg-black/35 backdrop-blur-md border-t border-white/10 py-6 mt-12 text-xs text-slate-400 font-sans">
