@@ -1,25 +1,30 @@
 import React, { useState, useEffect } from "react";
 import {
   initAuth,
-  googleSignIn,
+  loginWithCredentials,
   logout,
-  getAccessToken,
+  getCachedGoogleToken,
+  setCachedGoogleToken,
+  signInWithGoogleSheets,
 } from "./firebase";
 import {
-  listSpreadsheets,
-  createLoanSpreadsheet,
-  fetchApplications,
-  addApplication,
-  updateApplicationStatusAndNotes,
+  fetchApplicationsFirestore,
+  addApplicationFirestore,
+  updateApplicationFirestore,
+  deleteApplicationFirestore,
+} from "./firestoreService";
+import {
+  extractSpreadsheetId,
+  syncFirestoreToSheets,
 } from "./sheetsService";
-import { LoanApplication, BankStats, SpreadsheetFile } from "./types";
+import { LoanApplication, BankStats } from "./types";
 import LoginScreen from "./components/LoginScreen";
-import SpreadsheetSelector from "./components/SpreadsheetSelector";
 import LoanStatsCards from "./components/LoanStatsCards";
 import LoanCharts from "./components/LoanCharts";
 import NewApplicationForm from "./components/NewApplicationForm";
 import ApplicationDetailsModal from "./components/ApplicationDetailsModal";
 import AppsScriptGuideModal from "./components/AppsScriptGuideModal";
+import CreateSheetModal from "./components/CreateSheetModal";
 
 import {
   ShieldCheck,
@@ -38,25 +43,30 @@ import {
   Code,
   Copy,
   Check,
+  X,
+  Edit2,
+  Trash2,
 } from "lucide-react";
 
 export default function App() {
   // 1. Auth States
   const [user, setUser] = useState<any>(null);
-  const [accessToken, setAccessToken] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // 2. Spreadsheet Database States
-  const [spreadsheetId, setSpreadsheetId] = useState<string | null>(
-    localStorage.getItem("bank_loan_spreadsheet_id")
-  );
+  // 2. Google Sheet Links (Optional Integration)
   const [spreadsheetLink, setSpreadsheetLink] = useState<string>(
     localStorage.getItem("bank_loan_spreadsheet_link") || ""
   );
-  const [spreadsheetsList, setSpreadsheetsList] = useState<SpreadsheetFile[]>([]);
-  const [isSpreadsheetLoading, setIsSpreadsheetLoading] = useState(false);
+  const [isEditingLink, setIsEditingLink] = useState(false);
+  const [tempLink, setTempLink] = useState(spreadsheetLink);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<{
+    status: "idle" | "success" | "error";
+    message?: string;
+    details?: { added: number; updated: number; failed: number };
+  }>({ status: "idle" });
   
   // 3. Application Data States
   const [applications, setApplications] = useState<LoanApplication[]>([]);
@@ -70,13 +80,17 @@ export default function App() {
   const [kantorFilter, setKantorFilter] = useState<string>("Semua");
   const [selectedApplication, setSelectedApplication] = useState<LoanApplication | null>(null);
   const [showAppsScriptGuide, setShowAppsScriptGuide] = useState(false);
+  const [showCreateSheetModal, setShowCreateSheetModal] = useState(false);
+
+  // 5. Inline Edit ACC States
+  const [editingAccId, setEditingAccId] = useState<string | null>(null);
+  const [editingAccValue, setEditingAccValue] = useState<string>("");
 
   // Initialize Auth on Mount
   useEffect(() => {
     const unsubscribe = initAuth(
-      (currentUser, token) => {
+      (currentUser) => {
         setUser(currentUser);
-        setAccessToken(token);
         setNeedsAuth(false);
       },
       () => {
@@ -86,63 +100,57 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch Spreadsheets List if logged in but no Spreadsheet selected
+  // Load applications once logged in
   useEffect(() => {
-    if (accessToken && !spreadsheetId) {
-      loadSpreadsheets();
-    }
-  }, [accessToken, spreadsheetId]);
-
-  // Load applications once spreadsheet is selected
-  useEffect(() => {
-    if (accessToken && spreadsheetId) {
+    if (user) {
       loadApplications();
     }
-  }, [accessToken, spreadsheetId]);
-
-  const loadSpreadsheets = async () => {
-    if (!accessToken) return;
-    setIsSpreadsheetLoading(true);
-    try {
-      const list = await listSpreadsheets(accessToken);
-      setSpreadsheetsList(list);
-    } catch (err: any) {
-      console.error(err);
-      setErrorMsg("Gagal memuat berkas spreadsheet dari Google Drive.");
-    } finally {
-      setIsSpreadsheetLoading(false);
-    }
-  };
+  }, [user]);
 
   const loadApplications = async () => {
-    if (!accessToken || !spreadsheetId) return;
     setIsAppsLoading(true);
     setErrorMsg(null);
     try {
-      const data = await fetchApplications(accessToken, spreadsheetId);
-      setApplications(data);
+      const data = await fetchApplicationsFirestore();
+      
+      // Filter out VERA AGUSTININGSIH (case-insensitive)
+      const filtered = data.filter(
+        (app) => app.customerName.trim().toUpperCase() !== "VERA AGUSTININGSIH"
+      );
+      setApplications(filtered);
+
+      // Programmatically delete from DB in background if found
+      const veraApps = data.filter(
+        (app) => app.customerName.trim().toUpperCase() === "VERA AGUSTININGSIH"
+      );
+      if (veraApps.length > 0) {
+        for (const app of veraApps) {
+          try {
+            await deleteApplicationFirestore(app.id);
+          } catch (e) {
+            console.error("Gagal menghapus Vera di latar belakang:", e);
+          }
+        }
+      }
     } catch (err: any) {
       console.error(err);
       setErrorMsg(
-        err.message || "Gagal mengambil data permohonan. Periksa izin atau format Spreadsheet."
+        err.message || "Gagal mengambil data permohonan dari database Cloud."
       );
     } finally {
       setIsAppsLoading(false);
     }
   };
 
-  const handleLogin = async () => {
+  const handleLogin = async (username: string, password: string) => {
     setIsLoggingIn(true);
     setAuthError(null);
     try {
-      const result = await googleSignIn();
-      if (result) {
-        setUser(result.user);
-        setAccessToken(result.accessToken);
-        setNeedsAuth(false);
-      }
+      const loggedUser = await loginWithCredentials(username, password);
+      setUser(loggedUser);
+      setNeedsAuth(false);
     } catch (err: any) {
-      setAuthError(err.message || "Kesalahan masuk Google");
+      setAuthError(err.message || "Nama akun atau kata sandi salah.");
     } finally {
       setIsLoggingIn(false);
     }
@@ -151,58 +159,85 @@ export default function App() {
   const handleLogout = async () => {
     await logout();
     setUser(null);
-    setAccessToken(null);
-    setSpreadsheetId(null);
-    setSpreadsheetLink("");
     setApplications([]);
-    localStorage.removeItem("bank_loan_spreadsheet_id");
-    localStorage.removeItem("bank_loan_spreadsheet_link");
     setNeedsAuth(true);
   };
 
-  const handleSelectSpreadsheet = (id: string) => {
-    const matched = spreadsheetsList.find((s) => s.id === id);
-    const link = matched?.webViewLink || `https://docs.google.com/spreadsheets/d/${id}/edit`;
-    
-    setSpreadsheetId(id);
-    setSpreadsheetLink(link);
-    localStorage.setItem("bank_loan_spreadsheet_id", id);
-    localStorage.setItem("bank_loan_spreadsheet_link", link);
-  };
-
-  const handleCreateSpreadsheet = async (title: string) => {
-    if (!accessToken) return;
-    setIsSpreadsheetLoading(true);
-    try {
-      const result = await createLoanSpreadsheet(accessToken, title);
-      setSpreadsheetId(result.id);
-      setSpreadsheetLink(result.webViewLink);
-      localStorage.setItem("bank_loan_spreadsheet_id", result.id);
-      localStorage.setItem("bank_loan_spreadsheet_link", result.webViewLink);
-    } catch (err: any) {
-      console.error(err);
-      throw err;
-    } finally {
-      setIsSpreadsheetLoading(false);
-    }
+  const handleSaveLink = () => {
+    setSpreadsheetLink(tempLink);
+    localStorage.setItem("bank_loan_spreadsheet_link", tempLink);
+    setIsEditingLink(false);
   };
 
   const handleDisconnectSpreadsheet = () => {
-    if (window.confirm("Apakah Anda ingin memutuskan koneksi dari Spreadsheet database saat ini?")) {
-      setSpreadsheetId(null);
+    if (window.confirm("Apakah Anda ingin memutuskan tautan Spreadsheet?")) {
       setSpreadsheetLink("");
-      setApplications([]);
-      localStorage.removeItem("bank_loan_spreadsheet_id");
+      setTempLink("");
       localStorage.removeItem("bank_loan_spreadsheet_link");
-      loadSpreadsheets();
+      setSyncStatus({ status: "idle" });
+    }
+  };
+
+  const handleSyncSpreadsheet = async () => {
+    if (!spreadsheetLink) {
+      alert("Silakan tautkan Google Sheet Anda terlebih dahulu.");
+      return;
+    }
+
+    const sheetId = extractSpreadsheetId(spreadsheetLink);
+    if (!sheetId) {
+      alert("Format tautan Google Sheet tidak valid. Silakan periksa kembali tautan Anda.");
+      return;
+    }
+
+    setIsSyncing(true);
+    setSyncStatus({ status: "idle" });
+
+    try {
+      let token = getCachedGoogleToken();
+      if (!token) {
+        const authRes = await signInWithGoogleSheets();
+        token = authRes.accessToken;
+      }
+
+      if (!token) {
+        throw new Error("Gagal mengautentikasi dengan akun Google Anda.");
+      }
+
+      const result = await syncFirestoreToSheets(token, sheetId, applications);
+
+      setSyncStatus({
+        status: "success",
+        message: "Sinkronisasi berhasil!",
+        details: result,
+      });
+
+      setTimeout(() => {
+        setSyncStatus((prev) => (prev.status === "success" ? { status: "idle" } : prev));
+      }, 6000);
+    } catch (err: any) {
+      console.error(err);
+      setSyncStatus({
+        status: "error",
+        message: err.message || "Gagal menyelaraskan data dengan Google Sheets.",
+      });
+    } finally {
+      setIsSyncing(false);
     }
   };
 
   const handleSaveNewApplication = async (newApp: Omit<LoanApplication, "rowIndex">) => {
-    if (!accessToken || !spreadsheetId) return;
-    await addApplication(accessToken, spreadsheetId, newApp);
-    // Reload apps to sync data
-    await loadApplications();
+    setIsAppsLoading(true);
+    try {
+      await addApplicationFirestore(newApp);
+      await loadApplications();
+      setActiveTab("dashboard");
+    } catch (err: any) {
+      console.error(err);
+      alert("Gagal menambahkan pengajuan: " + err.message);
+    } finally {
+      setIsAppsLoading(false);
+    }
   };
 
   const handleUpdateApplicationStatus = async (
@@ -212,10 +247,62 @@ export default function App() {
     statusPemrosesan?: string,
     accAmount?: number
   ) => {
-    if (!accessToken || !spreadsheetId) return;
-    await updateApplicationStatusAndNotes(accessToken, spreadsheetId, id, status, notes, statusPemrosesan, accAmount);
-    // Reload apps to sync
-    await loadApplications();
+    try {
+      const updates: Partial<LoanApplication> = {
+        status,
+        adminNotes: notes,
+      };
+      if (statusPemrosesan !== undefined) {
+        updates.statusPemrosesan = statusPemrosesan;
+      }
+      if (accAmount !== undefined) {
+        updates.accAmount = accAmount;
+      }
+
+      await updateApplicationFirestore(id, updates);
+      await loadApplications();
+    } catch (err: any) {
+      console.error(err);
+      alert("Gagal memperbarui status pengajuan: " + err.message);
+    }
+  };
+
+  const handleUpdateACC = async (id: string, accAmount: number) => {
+    try {
+      const app = applications.find(a => a.id === id);
+      const updates: Partial<LoanApplication> = { accAmount };
+      if (app && app.status !== "Disetujui") {
+        updates.status = "Disetujui";
+        updates.statusPemrosesan = "DiACC";
+      }
+      await updateApplicationFirestore(id, updates);
+      await loadApplications();
+    } catch (err: any) {
+      console.error(err);
+      alert("Gagal memperbarui jumlah ACC: " + err.message);
+    }
+  };
+
+  const handleDeleteApplication = async (id: string) => {
+    const app = applications.find(a => a.id === id);
+    if (!app) return;
+    
+    if (window.confirm(`Apakah Anda yakin ingin menghapus permohonan atas nama ${app.customerName}? Tindakan ini tidak dapat dibatalkan.`)) {
+      setIsAppsLoading(true);
+      try {
+        await deleteApplicationFirestore(id);
+        await loadApplications();
+        // If the deleted application is currently open in modal, close it
+        if (selectedApplication?.id === id) {
+          setSelectedApplication(null);
+        }
+      } catch (err: any) {
+        console.error(err);
+        alert("Gagal menghapus pengajuan: " + err.message);
+      } finally {
+        setIsAppsLoading(false);
+      }
+    }
   };
 
   // Compile Bank Statistics
@@ -288,20 +375,6 @@ export default function App() {
     );
   }
 
-  if (!spreadsheetId) {
-    return (
-      <SpreadsheetSelector
-        spreadsheets={spreadsheetsList}
-        onSelect={handleSelectSpreadsheet}
-        onCreateNew={handleCreateSpreadsheet}
-        isLoading={isSpreadsheetLoading}
-        onRefresh={loadSpreadsheets}
-        onLogout={handleLogout}
-        userEmail={user?.email}
-      />
-    );
-  }
-
   return (
     <div className="min-h-screen bg-transparent flex flex-col font-sans text-white">
       
@@ -350,8 +423,10 @@ export default function App() {
             {/* Admin Profile & Log out */}
             <div className="flex items-center space-x-4">
               <div className="hidden sm:flex flex-col items-end text-xs leading-none">
-                <span className="font-bold text-slate-200 truncate max-w-[150px]">{user?.displayName || "Admin Bank"}</span>
-                <span className="text-[10px] text-slate-400 mt-1">{user?.email}</span>
+                <span className="font-bold text-slate-200 truncate max-w-[150px]">
+                  {user?.email ? user.email.split("@")[0].toUpperCase() : "ADMIN BANK"}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-1">{user?.email || "admin@puasklaten.com"}</span>
               </div>
               <button
                 onClick={handleLogout}
@@ -368,50 +443,193 @@ export default function App() {
 
       {/* 2. LIVE INTEGRATION SYNC SUB-BAR */}
       <div className="bg-black/35 backdrop-blur-md text-white py-2.5 px-4 border-b border-white/5 text-xs font-sans">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-2">
-          <div className="flex items-center space-x-2">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            <span className="text-[11px] text-slate-300">
-              Database Terkoneksi: <strong className="text-white">Google Sheet</strong>
-            </span>
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-3">
+          
+          {/* Connection Status */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center space-x-2">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              <span className="text-[11px] text-slate-300">
+                Penyimpanan Utama: <strong className="text-white">Cloud Database (Firestore)</strong>
+              </span>
+            </div>
+
+            <span className="text-white/15 hidden sm:inline">|</span>
+
+            <div className="flex items-center space-x-2">
+              <span className="text-[11px] text-slate-300">
+                Tautan Google Sheet:{" "}
+                {spreadsheetLink ? (
+                  <strong className="text-emerald-400 font-semibold">Tersambung</strong>
+                ) : (
+                  <strong className="text-amber-400 font-semibold">Belum Ditautkan (Opsional)</strong>
+                )}
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <a
-              href={spreadsheetLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center space-x-1 text-[11px] font-bold text-indigo-400 hover:text-indigo-300 hover:underline transition"
-            >
-              <FileSpreadsheet className="w-3.5 h-3.5" />
-              <span>Buka Google Sheets</span>
-              <ExternalLink className="w-3 h-3" />
-            </a>
-            
-            <span className="text-white/15">|</span>
+          {/* Actions & Link Editing */}
+          <div className="flex flex-wrap items-center gap-3 w-full md:w-auto justify-end">
+            {isEditingLink ? (
+              <div className="flex items-center space-x-2 w-full sm:w-auto">
+                <input
+                  type="text"
+                  value={tempLink}
+                  onChange={(e) => setTempLink(e.target.value)}
+                  placeholder="Tempel tautan Google Sheet..."
+                  className="bg-black/40 border border-white/15 rounded-lg px-2.5 py-1 text-[11px] text-white w-64 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+                <button
+                  onClick={handleSaveLink}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] px-2.5 py-1.5 rounded-lg transition"
+                >
+                  Simpan
+                </button>
+                <button
+                  onClick={() => {
+                    setTempLink(spreadsheetLink);
+                    setIsEditingLink(false);
+                  }}
+                  className="bg-white/10 hover:bg-white/15 text-slate-300 text-[10px] px-2.5 py-1.5 rounded-lg transition"
+                >
+                  Batal
+                </button>
+              </div>
+            ) : (
+              <>
+                {spreadsheetLink ? (
+                  <>
+                    <button
+                      onClick={handleSyncSpreadsheet}
+                      disabled={isSyncing}
+                      className="inline-flex items-center space-x-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold text-[11px] px-3 py-1.5 rounded-xl transition cursor-pointer shadow-lg shadow-emerald-600/15"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin" : ""}`} />
+                      <span>{isSyncing ? "Menyelaraskan..." : "Sinkronisasi Sekarang"}</span>
+                    </button>
 
-            <button
-              onClick={() => setShowAppsScriptGuide(true)}
-              className="inline-flex items-center space-x-1.5 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
-            >
-              <Code className="w-3.5 h-3.5" />
-              <span>Pasang Ekstensi Apps Script</span>
-            </button>
+                    <span className="text-white/15">|</span>
 
-            <span className="text-white/15">|</span>
+                    <a
+                      href={spreadsheetLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center space-x-1 text-[11px] font-bold text-indigo-400 hover:text-indigo-300 hover:underline transition"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      <span>Buka Google Sheets</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                    
+                    <button
+                      onClick={() => {
+                        setTempLink(spreadsheetLink);
+                        setIsEditingLink(true);
+                      }}
+                      className="text-[10px] text-slate-400 hover:text-white underline transition cursor-pointer"
+                    >
+                      Ubah Tautan
+                    </button>
 
-            <button
-              onClick={handleDisconnectSpreadsheet}
-              className="text-[11px] text-rose-400 hover:text-rose-300 transition cursor-pointer font-medium"
-            >
-              Putuskan Koneksi
-            </button>
+                    <span className="text-white/15">|</span>
+
+                    <button
+                      onClick={handleDisconnectSpreadsheet}
+                      className="text-[10px] text-rose-400 hover:text-rose-300 transition cursor-pointer font-medium"
+                    >
+                      Putuskan Tautan
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setIsEditingLink(true)}
+                      className="inline-flex items-center space-x-1 text-[11px] font-bold text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Tautkan Google Sheet</span>
+                    </button>
+
+                    <span className="text-white/15">|</span>
+
+                    <button
+                      onClick={() => setShowCreateSheetModal(true)}
+                      className="inline-flex items-center space-x-1 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      <span>Buat Google Sheet Baru</span>
+                    </button>
+                  </>
+                )}
+
+                <span className="text-white/15">|</span>
+
+                <button
+                  onClick={() => setShowAppsScriptGuide(true)}
+                  className="inline-flex items-center space-x-1.5 text-[11px] font-bold text-emerald-400 hover:text-emerald-300 transition cursor-pointer"
+                >
+                  <Code className="w-3.5 h-3.5" />
+                  <span>Panduan Apps Script</span>
+                </button>
+              </>
+            )}
           </div>
+
         </div>
       </div>
+
+      {/* Sync Status Feedback Banner */}
+      {syncStatus.status !== "idle" && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-4 animate-fade-in">
+          {syncStatus.status === "success" ? (
+            <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-xl text-emerald-300 text-xs flex items-start justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="bg-emerald-500/20 text-emerald-400 p-2 rounded-lg">
+                  <Check className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="font-bold text-white">{syncStatus.message}</p>
+                  {syncStatus.details && (
+                    <p className="text-slate-400 mt-0.5">
+                      Berhasil menambahkan <span className="text-emerald-400 font-bold">{syncStatus.details.added}</span> baris baru dan memperbarui <span className="text-indigo-400 font-bold">{syncStatus.details.updated}</span> baris data di Google Sheet.
+                      {syncStatus.details.failed > 0 && (
+                        <span className="text-rose-400 font-semibold"> (Gagal: {syncStatus.details.failed})</span>
+                      )}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setSyncStatus({ status: "idle" })}
+                className="text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="bg-rose-500/10 border border-rose-500/20 p-4 rounded-xl text-rose-300 text-xs flex items-start justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="bg-rose-500/20 text-rose-400 p-2 rounded-lg">
+                  <AlertCircle className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="font-bold text-white">Gagal Menyinkronkan Data</p>
+                  <p className="text-slate-400 mt-0.5">{syncStatus.message}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSyncStatus({ status: "idle" })}
+                className="text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 3. MAIN APP AREA */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 space-y-8">
@@ -450,7 +668,7 @@ export default function App() {
             <LoanStatsCards stats={stats} />
 
             {/* Real-time Charts section */}
-            <LoanCharts applications={applications} />
+            <LoanCharts applications={applications} onUpdateACC={handleUpdateACC} />
 
             {/* Applications List Table Section */}
             <div className="bg-white/5 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl overflow-hidden flex flex-col">
@@ -587,8 +805,50 @@ export default function App() {
                           </td>
 
                           {/* Approved amount formatted */}
-                          <td className="px-6 py-4 whitespace-nowrap font-bold text-emerald-400">
-                            {app.accAmount && app.accAmount > 0 ? formatIDR(app.accAmount) : "-"}
+                          <td className="px-6 py-4 whitespace-nowrap font-bold text-emerald-400" onClick={(e) => e.stopPropagation()}>
+                            {editingAccId === app.id ? (
+                              <div className="flex items-center space-x-1">
+                                <span className="text-emerald-500 text-[10px]">Rp</span>
+                                <input
+                                  type="number"
+                                  value={editingAccValue}
+                                  onChange={(e) => setEditingAccValue(e.target.value)}
+                                  className="w-24 px-1.5 py-1 text-xs bg-[#131d35] border border-emerald-500/30 rounded text-white font-bold focus:outline-none focus:ring-1 focus:ring-emerald-500 font-display"
+                                  placeholder="0"
+                                  autoFocus
+                                />
+                                <button
+                                  onClick={async () => {
+                                    const val = parseFloat(editingAccValue) || 0;
+                                    await handleUpdateACC(app.id, val);
+                                    setEditingAccId(null);
+                                  }}
+                                  className="p-1 bg-emerald-600 hover:bg-emerald-500 rounded text-white transition cursor-pointer"
+                                  title="Simpan"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  onClick={() => setEditingAccId(null)}
+                                  className="p-1 bg-white/10 hover:bg-white/15 rounded text-slate-300 transition cursor-pointer"
+                                  title="Batal"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <div
+                                className="flex items-center space-x-1.5 group/acc cursor-pointer hover:text-emerald-300 transition"
+                                onClick={() => {
+                                  setEditingAccId(app.id);
+                                  setEditingAccValue(app.accAmount ? app.accAmount.toString() : app.amount.toString());
+                                }}
+                                title="Klik untuk ubah limit ACC"
+                              >
+                                <span>{app.accAmount && app.accAmount > 0 ? formatIDR(app.accAmount) : "-"}</span>
+                                <Edit2 className="w-3 h-3 text-slate-400 opacity-0 group-hover/acc:opacity-100 transition" />
+                              </div>
+                            )}
                           </td>
 
                           {/* Term */}
@@ -658,17 +918,25 @@ export default function App() {
                           </td>
 
                           {/* Detail trigger */}
-                          <td className="px-6 py-4 whitespace-nowrap text-right">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedApplication(app);
-                              }}
-                              className="inline-flex items-center space-x-1 text-indigo-400 group-hover:text-indigo-300 transition font-bold cursor-pointer"
-                            >
-                              <span>Tinjau</span>
-                              <ChevronRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition" />
-                            </button>
+                          <td className="px-6 py-4 whitespace-nowrap text-right" onClick={(e) => e.stopPropagation()}>
+                            <div className="flex items-center justify-end space-x-3">
+                              <button
+                                onClick={() => {
+                                  setSelectedApplication(app);
+                                }}
+                                className="inline-flex items-center space-x-1 text-indigo-400 hover:text-indigo-300 transition font-bold cursor-pointer font-display text-[11px]"
+                              >
+                                <span>Tinjau</span>
+                                <ChevronRight className="w-3.5 h-3.5 transform group-hover:translate-x-0.5 transition" />
+                              </button>
+                              <button
+                                onClick={() => handleDeleteApplication(app.id)}
+                                className="p-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 hover:text-rose-300 rounded-lg border border-rose-500/20 transition cursor-pointer"
+                                title="Hapus Permohonan"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -698,12 +966,18 @@ export default function App() {
           application={selectedApplication}
           onClose={() => setSelectedApplication(null)}
           onSave={handleUpdateApplicationStatus}
+          onDelete={handleDeleteApplication}
         />
       )}
 
       <AppsScriptGuideModal
         isOpen={showAppsScriptGuide}
         onClose={() => setShowAppsScriptGuide(false)}
+      />
+
+      <CreateSheetModal
+        isOpen={showCreateSheetModal}
+        onClose={() => setShowCreateSheetModal(false)}
       />
 
       {/* 5. FOOTER DETAILS */}

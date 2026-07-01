@@ -1,0 +1,32 @@
+{
+  "entities": {
+    "applications": {
+      "title": "Applications",
+      "description": "Permohonan pinjaman kredit nasabah",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "customerName": { "type": "string" },
+        "customerEmail": { "type": "string" },
+        "phoneNumber": { "type": "string" },
+        "amount": { "type": "number" },
+        "termMonths": { "type": "number" },
+        "purpose": { "type": "string" },
+        "monthlyIncome": { "type": "number" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "adminNotes": { "type": "string" },
+        "kantor": { "type": "string" },
+        "statusPemrosesan": { "type": "string" },
+        "accAmount": { "type": "number" }
+      },
+      "required": ["id", "customerName", "phoneNumber", "amount", "termMonths", "purpose", "monthlyIncome", "status", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/applications/{applicationId}": {
+      "schema": "applications",
+      "description": "Collection of credit applications"
+    }
+  }
+}

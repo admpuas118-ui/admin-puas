@@ -23,6 +23,118 @@ export const SHEET_COLUMNS = [
 ];
 
 /**
+ * Ensures the default sheet tab exists and is initialized with headers.
+ */
+export async function ensureSheetTabExists(accessToken: string, spreadsheetId: string): Promise<void> {
+  try {
+    // 1. Fetch spreadsheet metadata to check if DEFAULT_SHEET_NAME exists
+    const metaRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets(properties(title,sheetId))`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    if (!metaRes.ok) {
+      const err = await metaRes.json();
+      throw new Error(err.error?.message || "Gagal membaca struktur spreadsheet");
+    }
+
+    const meta = await metaRes.json();
+    const sheets = meta.sheets || [];
+    const sheetExists = sheets.some(
+      (s: any) => s.properties?.title === DEFAULT_SHEET_NAME
+    );
+
+    // 2. If it does not exist, add it
+    if (!sheetExists) {
+      const createRes = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            requests: [
+              {
+                addSheet: {
+                  properties: {
+                    title: DEFAULT_SHEET_NAME,
+                    gridProperties: {
+                      frozenRowCount: 1,
+                    },
+                  },
+                },
+              },
+            ],
+          }),
+        }
+      );
+
+      if (!createRes.ok) {
+        const err = await createRes.json();
+        throw new Error(err.error?.message || "Gagal membuat tab permohonan baru");
+      }
+    }
+
+    // 3. Check if headers exist. If the range is empty or invalid, write headers.
+    const valuesRes = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(DEFAULT_SHEET_NAME)}!A1:N1`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+
+    if (valuesRes.ok) {
+      const data = await valuesRes.json();
+      if (!data.values || data.values.length === 0 || !data.values[0] || data.values[0].length === 0) {
+        // Headers are missing, let's write them
+        const putRes = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(DEFAULT_SHEET_NAME)}!A1:N1?valueInputOption=RAW`,
+          {
+            method: "PUT",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              values: [SHEET_COLUMNS],
+            }),
+          }
+        );
+        if (!putRes.ok) {
+          console.warn("Gagal menulis baris judul kolom awal.");
+        }
+      }
+    } else {
+      // Direct writing fallback if reading failed but sheet was just created
+      await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(DEFAULT_SHEET_NAME)}!A1:N1?valueInputOption=RAW`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            values: [SHEET_COLUMNS],
+          }),
+        }
+      );
+    }
+  } catch (error) {
+    console.error("Error in ensureSheetTabExists:", error);
+    throw error;
+  }
+}
+
+/**
  * Fetch files from Google Drive with MIME type spreadsheet.
  */
 export async function listSpreadsheets(accessToken: string): Promise<any[]> {
@@ -126,7 +238,9 @@ export async function createLoanSpreadsheet(accessToken: string, title: string):
  */
 export async function fetchApplications(accessToken: string, spreadsheetId: string): Promise<LoanApplication[]> {
   try {
-    // We try to fetch from DEFAULT_SHEET_NAME, if fails we fall back to first sheet or values A:N
+    // Self-healing: make sure DEFAULT_SHEET_NAME exists with correct headers
+    await ensureSheetTabExists(accessToken, spreadsheetId);
+
     const res = await fetch(
       `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(DEFAULT_SHEET_NAME)}!A:N`,
       {
@@ -137,17 +251,6 @@ export async function fetchApplications(accessToken: string, spreadsheetId: stri
     );
 
     if (!res.ok) {
-      // If our custom sheet tab does not exist, let's look at spreadsheet metadata and try first sheet name
-      const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (metaRes.ok) {
-        const meta = await metaRes.json();
-        const firstSheetName = meta.sheets?.[0]?.properties?.title;
-        if (firstSheetName && firstSheetName !== DEFAULT_SHEET_NAME) {
-          return fetchFromSheetTab(accessToken, spreadsheetId, firstSheetName);
-        }
-      }
       throw new Error("Gagal membaca spreadsheet. Pastikan lembar tidak kosong atau terhapus.");
     }
 
@@ -206,6 +309,9 @@ function parseRowsToApplications(rows: any[][]): LoanApplication[] {
  */
 export async function addApplication(accessToken: string, spreadsheetId: string, app: Omit<LoanApplication, "rowIndex">): Promise<void> {
   try {
+    // Self-healing: make sure DEFAULT_SHEET_NAME exists with correct headers
+    await ensureSheetTabExists(accessToken, spreadsheetId);
+
     const rowValues = [
       app.id,
       app.customerName,
@@ -241,33 +347,6 @@ export async function addApplication(accessToken: string, spreadsheetId: string,
     );
 
     if (!res.ok) {
-      // Fallback: fetch metadata to append to first sheet
-      const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=sheets.properties.title`, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (metaRes.ok) {
-        const meta = await metaRes.json();
-        const firstSheetName = meta.sheets?.[0]?.properties?.title;
-        if (firstSheetName) {
-          const fallbackRes = await fetch(
-            `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(firstSheetName)}!A:N:append?valueInputOption=USER_ENTERED`,
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                values: [rowValues],
-              }),
-            }
-          );
-          if (!fallbackRes.ok) {
-            throw new Error("Gagal menambahkan permohonan ke spreadsheet");
-          }
-          return;
-        }
-      }
       throw new Error("Gagal menyisipkan baris permohonan baru.");
     }
   } catch (error) {
@@ -405,3 +484,128 @@ export async function updateApplicationStatusAndNotes(
     throw error;
   }
 }
+
+/**
+ * Helper to extract spreadsheet ID from a Google Sheets URL.
+ */
+export function extractSpreadsheetId(url: string): string | null {
+  if (!url) return null;
+  const match = url.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return match ? match[1] : null;
+}
+
+/**
+ * Sync all applications from Firestore to Google Sheets.
+ */
+export async function syncFirestoreToSheets(
+  accessToken: string,
+  spreadsheetId: string,
+  firestoreApps: LoanApplication[]
+): Promise<{ added: number; updated: number; failed: number }> {
+  let added = 0;
+  let updated = 0;
+  let failed = 0;
+
+  try {
+    // 1. Ensure tab exists and headers are present
+    await ensureSheetTabExists(accessToken, spreadsheetId);
+
+    // 2. Fetch existing sheet applications
+    const sheetApps = await fetchApplications(accessToken, spreadsheetId);
+    const sheetAppMap = new Map<string, LoanApplication>();
+    sheetApps.forEach((app) => {
+      if (app.id) {
+        sheetAppMap.set(app.id, app);
+      }
+    });
+
+    // 3. Loop through firestore applications and sync
+    for (const app of firestoreApps) {
+      try {
+        const matchedSheetApp = sheetAppMap.get(app.id);
+
+        if (matchedSheetApp) {
+          // Check if updates are needed
+          const needsUpdate =
+            matchedSheetApp.status !== app.status ||
+            matchedSheetApp.adminNotes !== app.adminNotes ||
+            matchedSheetApp.statusPemrosesan !== app.statusPemrosesan ||
+            matchedSheetApp.accAmount !== app.accAmount ||
+            matchedSheetApp.customerName !== app.customerName ||
+            matchedSheetApp.phoneNumber !== app.phoneNumber ||
+            matchedSheetApp.amount !== app.amount ||
+            matchedSheetApp.termMonths !== app.termMonths ||
+            matchedSheetApp.purpose !== app.purpose ||
+            matchedSheetApp.monthlyIncome !== app.monthlyIncome;
+
+          if (needsUpdate) {
+            await updateEntireSheetRow(accessToken, spreadsheetId, matchedSheetApp.rowIndex!, app);
+            updated++;
+          }
+        } else {
+          // Add as new row
+          await addApplication(accessToken, spreadsheetId, app);
+          added++;
+        }
+      } catch (err) {
+        console.error(`Gagal menyinkronkan aplikasi ${app.id}:`, err);
+        failed++;
+      }
+    }
+
+    return { added, updated, failed };
+  } catch (error) {
+    console.error("Error in syncFirestoreToSheets:", error);
+    throw error;
+  }
+}
+
+/**
+ * Update an entire row in Google Sheets
+ */
+export async function updateEntireSheetRow(
+  accessToken: string,
+  spreadsheetId: string,
+  rowIndex: number,
+  app: LoanApplication
+): Promise<void> {
+  const sheetName = DEFAULT_SHEET_NAME;
+  
+  const rowValues = [
+    app.id,
+    app.customerName,
+    app.customerEmail,
+    app.phoneNumber,
+    app.amount,
+    app.termMonths,
+    app.purpose,
+    app.monthlyIncome,
+    app.status,
+    app.createdAt,
+    app.adminNotes,
+    app.kantor,
+    app.statusPemrosesan,
+    app.accAmount || 0,
+  ];
+
+  const range = `${encodeURIComponent(sheetName)}!A${rowIndex}:N${rowIndex}`;
+  const res = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}?valueInputOption=USER_ENTERED`,
+    {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        values: [rowValues],
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.error?.message || `Gagal memperbarui baris ${rowIndex}`);
+  }
+}
+
